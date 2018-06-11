@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package mineFs.proto;
+
+message PutRequest {
+    int64 seq = 1;
+    bytes key = 2;
+    bytes value = 3;
+    bool del = 4;
+}
+
+message PutResponse {
+    int64 seq = 1;
+    int64 status = 2;
+}
+
+message GetRequest {
+    int64 seq = 1;
+    bytes key = 2;
+}
+
+message GetResponse {
+    int64 seq = 1;
+    int64 status = 2;
+    bytes value = 3;
+}
+
+service RaftKv {
+    rpc Put(PutRequest) returns(PutResponse);
+    rpc Get(GetRequest) returns(GetResponse);
+}
+

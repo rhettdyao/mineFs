@@ -1,0 +1,60 @@
+syntax = "proto3";
+import "status_code.proto";
+package mineFs.proto;
+
+message WriteBlockRequest {
+	int64 seq_id = 1;
+	int64 block_id = 2;
+	int64 offset = 3;
+	int32 packet_seq = 4;
+	bytes databuf = 5;
+	repeated string chunkservers = 6;
+	bool is_last = 7;
+	repeated string desc = 8;
+	repeated int64 timestamp = 9;
+	int32 recover_version = 10;
+	bool sync_on_close = 11;
+	int64 total_size = 15;
+}
+
+message WriteBlockResponse {
+	int64 seq_id = 1;
+	StatusCode err = 2;
+	string bad_chunkserver = 3;
+	int64 cur_size = 4;
+	int32 cur_seq = 5;
+	repeated string desc = 6;
+	int64 timestamp = 7;
+}
+
+message ReadBlockRequest {
+	int64 seq_id = 1;
+	int64 block_id = 2;
+	int64 offset = 3;
+	int32 read_len = 4;
+}
+
+message ReadBlockResponse {
+	int64 seq_id = 1;
+	StatusCode err = 2;
+	bytes databuf = 3;
+	repeated int64 timestamp = 4;
+}
+
+message GetBlockInfoRequest {
+	int64 seq_id = 1;
+	int64 block_id = 2;
+}
+
+message GetBlockInfoResponse {
+	int64 seq_id = 1;
+	StatusCode err = 2;
+	int64 block_size = 3;
+	repeated int64 timestamp = 4;
+}
+
+service ChunkServer{
+	rpc WriteBlock(WriteBlockRequest) returns(WriteBlockResponse);
+	rpc ReadBlock(ReadBlockRequest) returns(ReadBlockResponse);
+	rpc GetBlockInfo(GetBlockInfoRequest) returns(GetBlockInfoResponse);
+}

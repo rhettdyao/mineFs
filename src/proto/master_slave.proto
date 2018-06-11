@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package mineFs.proto;
+
+message AppendLogRequest {
+    repeated bytes log_data = 1;
+    int64 index = 2;
+    int64 term = 3;
+}
+
+message AppendLogResponse {
+    bool success = 1;
+    int64 index = 2;
+}
+
+message SnapshotRequest {
+    bytes data = 1;
+    int64 seq = 2;
+    int64 index = 3;
+    int64 term = 4;
+}
+
+message SnapshotResponse {
+    bool success = 1;
+}
+
+service MasterSlave {
+    rpc AppendLog(AppendLogRequest) returns(AppendLogResponse);
+    rpc Snapshot(SnapshotRequest) returns(SnapshotResponse);
+}

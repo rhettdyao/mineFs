@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package mineFs.proto;
+
+message FileInfo{
+    uint64 id = 1;
+    uint64 version = 2;
+    int32 mode = 3;
+    int64 blocks = 4;
+    uint32 ctime = 5;
+    string name = 6;
+    int64 size = 7;
+    int32 replicas = 8;
+    int64 parent_entry_id = 9;
+    int32 owner = 10;
+    repeated string cs_addrs = 11;
+}
