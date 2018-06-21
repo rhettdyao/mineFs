@@ -1,194 +1,300 @@
 package nameserver
 
 import (
-	"../github.com/rhettdyao/goleveldb/leveldb"
-	"../github.com/rhettdyao/goleveldb/leveldb/util"
-	"encoding/binary"
+	"github.com/syndtr/goleveldb/leveldb"
+	"common"
 	"path/filepath"
-	"os/exec"
+	"encoding/binary"
+	"github.com/syndtr/goleveldb/leveldb/util"
 	"sync/atomic"
-	"container/list"
+	"fmt"
 )
 
-const kRooetEntryId = uint64(1)
+const (
+	MODE_RDONLY = 0
+	MODE_RDWR = 1
+)
 
-var kCurretEntryId = kRooetEntryId
+type NameSpace struct {
+	root int64
+	db *leveldb.DB
+	mode int
+	info FileInfo
+}
 
-func encodingKeyStore(id uint64, name string) []byte{
+func NewNameSpace(db *leveldb.DB, root int64, mode int) *NameSpace{
+	var ns NameSpace
+	ns.root = root
+	ns.db = db
+	ns.mode = mode
+	ns.info.SetDefault("/", true)
+	ns.info.Ino = root
+	return &ns
+}
+
+func encodingKeyStore(id int64, name string) []byte{
 	buf := make([]byte, 8 + len(name))
-	binary.BigEndian.PutUint64(buf[:7], id)
+	binary.BigEndian.PutUint64(buf[:8], uint64(id))
 	copy(buf[8:], []byte(name))
 	return buf
 }
 
-func decodingKeyStore(k []byte)(uint64, string){
-	id := binary.BigEndian.Uint64(k[:7])
+func decodingKeyStore(k []byte)(int64, string){
+	id := binary.BigEndian.Uint64(k[:8])
 	name := string(k[8:])
-	return id, name
+	return int64(id), name
 }
 
-type NameSpace struct {
-	db *leveldb.DB
-	root_entry uint64
-}
 
-func (ns *NameSpace) getFromKeyStore(key []byte) (*FileInfo, bool){
-	if value, err := ns.db.Get(key, nil); err != nil{
-		var info FileInfo
-		if info.DecodeFileInfo(value){
-			return _, false
-		}
-		return &info, true
+func (ns *NameSpace) putToDb(parent int64, name string, info *FileInfo) bool{
+	key := encodingKeyStore(parent, name)
+	data , err := info.Marshal()
+	if err != nil{
+		return false
 	}
-	return _, false
+	err = ns.db.Put(key, data, nil)
+	return (err == nil)
 }
 
-func (ns *NameSpace)lookUpByParent(parent_id uint64, name string)(info *FileInfo, ret bool){
-	return ns.getFromKeyStore(encodingKeyStore(parent_id, name))
+func (ns *NameSpace) delFromDb(parent int64, name string) bool{
+	key := encodingKeyStore(parent, name)
+	err := ns.db.Delete(key, nil)
+	return err == nil
 }
 
-func (ns *NameSpace) LookUp(name string)(info *FileInfo, ret bool){
-	if name == "/"{
-		return
+func (ns *NameSpace) getFromDb(parent int64, name string) (info *FileInfo, ret bool){
+	info = &FileInfo{}
+	key := encodingKeyStore(parent, name)
+	data, err := ns.db.Get(key, nil)
+	if err != nil{
+		return nil, false
 	}
-
-	split_list := filepath.SplitList(name)
-	if len(split_list) == 0{
-		return
+	err = info.UnMarshal(data)
+	if err != nil{
+		return nil, false
 	}
-
-	parent_id, entry_id :=kRooetEntryId, kRooetEntryId
-	for _, v := range split_list{
-		if info, ret = ns.lookUpByParent(parent_id, v); ret != true{
-			return
-		}
-		parent_id = entry_id
-		entry_id = info.id
-	}
-	info.name = split_list[len(split_list) - 1]
-	info.parent_id = parent_id
-	return
+	return info, true
 }
 
-func (ns *NameSpace)delFileInfo(key []byte) bool{
-	return (ns.db.Delete(key, nil) == nil)
-}
-
-func (ns *NameSpace)UpdateFileInfo(info *FileInfo) bool{
-	return (ns.db.Put(encodingKeyStore(info.parent_id, info.name), info.EncodeFileInfo(), nil) == nil)
-}
-
-func (ns *NameSpace)GetFileInfo(name string) (info *FileInfo, ret bool){
-	if info, ret = ns.LookUp(name); ret == false{
-		return
-	}
-	return
-}
-
-func (ns *NameSpace) buildPath(file_path string)(info *FileInfo, name string, ret bool){
-	split_list := filepath.SplitList(name)
-	parent_id := kRooetEntryId
-	depth := len(file_path)
-
-	for i := 0; i < len(split_list) -1;  i++{
-		var file_info *FileInfo
-		if file_info, ret = ns.lookUpByParent(parent_id, split_list[i]); ret == true {
-			parent_id = file_info.id
-		}else {
-			return
-		}
-	}
-	name = split_list[len(split_list) -1]
-	return
-}
-
-func (ns *NameSpace) CreateFile(name string) (err error){
-	if name == "/"{
-		return
-	}
-	file_info, file_name, ret := ns.buildPath(name)
-
-	if !ret{
-		return
-	}
-
-	parent_id := file_info.parent_id
-	_, exist := ns.lookUpByParent(parent_id, file_name)
-	if (exist){
-		return
+func (ns *NameSpace) lookupByParent(parent int64, name string) (*FileInfo, common.ErrorStatus){
+	fmt.Printf("Trace: lookup file(%s) parent(%d) in\n", name, parent)
+	v, err := ns.db.Get(encodingKeyStore(parent, name), nil)
+	if err != nil{
+		fmt.Printf("read file(%s) parent(%v) failed, err(%s)\n", name, parent, err.Error())
+		return nil, common.ENotOk
 	}
 
 	var info FileInfo
-	info.id = atomic.AddUint64(&kCurretEntryId, 1)
-	info.parent_id = parent_id
-	err = ns.db.Put(encodingKeyStore(info.parent_id, file_name), info.EncodeFileInfo(), nil)
+	err = info.UnMarshal(v)
 	if err != nil{
-		return
+		fmt.Printf("unmarshal file failed, err(%s)\n", err.Error())
+		return nil, common.ENotOk
 	}
-	return
+	return &info, common.EOK
 }
 
-func (ns *NameSpace)ListDirectory(dir string) (childrens []string, err error){
-	file_info, ret := ns.LookUp(dir)
-	if ret == false{
-		return
+func (ns *NameSpace) LookUp(fpath string) (info *FileInfo, errcode common.ErrorStatus){
+	fmt.Printf("Trace: look up(%s) in\n", fpath)
+	if fpath == "/"{
+		return &ns.info, common.EOK
 	}
-	var r leveldb.util.Range
-	r.Start = encodingKeyStore(file_info.id, "")
-	r.Limit = encodingKeyStore(file_info.id+1, "")
-
-	var temp list.List
-	it  := ns.db.NewIterator(&r, nil)
-	for it.Valid(){
-		var info FileInfo
-		ret := info.DecodeFileInfo(it.Value)
-		if ret == false{
+	parent := ns.root
+	lists := common.SplistPath(fpath)
+	for i := 0; i < len(lists); i++{
+		info, errcode = ns.lookupByParent(parent, lists[i])
+		if errcode != common.EOK{
 			return
 		}
-		temp.PushBack(info.name)
+		parent = info.Ino
 	}
-	childrens = make([]string, temp.Len())
-	var index = 0
-	for el := temp.Front(); el != nil; el = el.Next(){
-		childrens[index] = el.Value.(string)
-		index++
+	return info, common.EOK
+}
+
+func (ns *NameSpace) Mkdir(fpath string, perm int) common.ErrorStatus{
+	fmt.Printf("Trace: Mk dir(%s) in\n", fpath)
+	if fpath == "/" || fpath == ""{
+		return common.EBadParam
+	}
+	if ns.mode == MODE_RDONLY{
+		return common.ENoPermission
 	}
 
-	return childrens, nil
+	dir, name := filepath.Split(fpath)
+	dir_info, errcode := ns.LookUp(dir)
+	if errcode != common.EOK{
+		return errcode
+	}
+
+	_, errcode = ns.lookupByParent(dir_info.Ino, name)
+	if errcode == common.EOK{
+		return common.EFileExist
+	}
+
+	var info FileInfo
+	info.SetDefault(name, true)
+	info.Ino = atomic.AddInt64(&kCurrentIno, 1)
+	data, err := info.Marshal()
+	if err != nil{
+		fmt.Println("mashal failed")
+		return common.ENotOk
+	}
+
+	err = ns.db.Put(encodingKeyStore(dir_info.Ino, name), data, nil)
+	if err != nil{
+		fmt.Println("put to db failed")
+		return common.ENotOk
+	}
+
+	return common.EOK
+}
+
+func (ns *NameSpace) ReadDir(fpath string) (childrens []string, errcode common.ErrorStatus){
+	fmt.Printf("Trace: read dir(%s) in\n", fpath)
+	temp, errcode := ns.LookUp(fpath)
+	if errcode != common.EOK{
+		return
+	}
+	if !temp.IsDir(){
+		return nil, common.ENotFound
+	}
+	r := util.BytesPrefix(encodingKeyStore(temp.Ino, ""))
+	it := ns.db.NewIterator(r, nil)
+	defer  it.Release()
+	for it.First(); it.Valid(); it.Next(){
+		var info FileInfo
+		err := info.UnMarshal(it.Value())
+		if err != nil{
+			return nil, common.ENotOk
+		}
+		childrens = append(childrens, info.Name)
+	}
+	return childrens, common.EOK
+}
+
+func (ns *NameSpace) RmDir(fpath string) (errcode common.ErrorStatus){
+	fmt.Printf("Trace: rm dir(%s) in\n", fpath)
+	if fpath == "/"{
+		return common.ENoPermission
+	}
+
+	childrens, errcode := ns.ReadDir(fpath)
+	if errcode != common.EOK{
+		return
+	}
+	if len(childrens) != 0{
+		return common.EDirNotEmpty
+	}
+
+	info, errcode := ns.LookUp(fpath)
+	if errcode != common.EOK{
+		return
+	}
+
+	err := ns.db.Delete(encodingKeyStore(info.ParentIno, info.Name), nil)
+	if err != nil{
+		return common.ENotOk
+	}
+	return common.EOK
+}
+
+func (ns *NameSpace) Create(fpath string) (ret common.ErrorStatus){
+	if fpath == "/"{
+		return common.ENoPermission
+	}
+
+	dir, name := filepath.Split(fpath)
+	dirinfo, ret := ns.LookUp(dir)
+	if ret != common.EOK{
+		return
+	}
+	_, ret = ns.lookupByParent(dirinfo.Ino, name)
+	if ret == common.EOK{
+		return common.EFileExist
+	}
+	var info FileInfo
+	info.SetDefault(name, false)
+	info.Ino = atomic.AddInt64(&kCurrentIno, 1)
+	info.ParentIno = dirinfo.Ino
+
+	if !ns.putToDb(info.ParentIno, info.Name, &info){
+		return common.ENotOk
+	}
+	return common.EOK
+}
+
+func (ns *NameSpace) Delete(fpath string) (ret common.ErrorStatus){
+	if fpath == "/"{
+		return common.ENoPermission
+	}
+	info, ret := ns.LookUp(fpath)
+	if ret != common.EOK{
+		return
+	}
+	if !info.IsRegular(){
+		return common.EFileExist
+	}
+
+	if !ns.delFromDb(info.ParentIno, info.Name){
+		return common.ENotOk
+	}
+	return common.EOK
 }
 
 
-func (ns *NameSpace) Rename(old_path, new_path string) (err error){
-	if old_path == "/" || new_path == "/" || old_path == new_path{
-		return nil
-	}
-
-	old_info, ret := ns.LookUp(old_path)
-	if !ret{
-		return nil
-	}
-
-	_, ret = ns.LookUp(new_path)
-	if ret == true{
-		return nil //false
-	}
-	dir, dst_name := filepath.Split(new_path)
-	new_dir_info,ret := ns.LookUp(dir)
-	if ret == false{
-		return nil //false
-	}
-	old_info.parent_id = new_dir_info.id
-
-	return ns.db.Put(encodingKeyStore(old_info.id, dst_name), old_info.EncodeFileInfo(), nil)
+/*
+type NSManager struct {
+	lock sync.RWMutex
+	roots map[int64] *NameSpace
+	db *leveldb.DB
 }
 
-func (ns *NameSpace)RemoveFile(fname string) (err error){
-	info, ret := ns.LookUp(fname)
-	if !ret{
-		return nil //success
+var Kmanager NSManager
+
+func init(){
+	dbpath := "/tmp"
+	var err error
+	Kmanager.db, err = leveldb.OpenFile(dbpath, nil)
+	if err != nil{
+		panic("Bug: can not open db\n")
 	}
-	
+
+	Kmanager.roots[kDefaultSnapShot] = NewNameSpace(Kmanager.db, kDefaultRootIno)
+	if !Kmanager.recover(){
+		panic("Bug: Recover namespace failed\n")
+	}
 }
 
+func (m *NSManager) recoverOne(info *FileInfo) bool{
+	CompareAddBigger(info.Ino)
+	if _, ok := info.xattrs["iroot"]; ok{
+		if info.Ino == kDefaultRootIno{
+			ns := NewNameSpace(m.db, info.Ino)
+			m.roots[0] = ns
+		}else {
+			return m.RecoverSnapshot(info)
+		}
+	}
+	return true
+}
+
+func (m *NSManager) recover() bool{
+	it := m.db.NewIterator(nil, nil)
+	for it.First(); it.Valid(); it.Next(){
+		var info FileInfo
+		if err := info.UnMarshal(it.Value()); err != nil{
+			return false
+		}
+		if !m.recoverOne(&info){
+			return false
+		}
+	}
+	return true
+}
+
+func (m *NSManager) Get() bool{
+
+}
+
+*/
 
 
